@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/mua69/gstakepool/log"
+	"io"
 	"io/ioutil"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -40,8 +42,8 @@ type Config struct{
 	Clients []ClientConfig
 }
 
-var g_config = Config{Port:3200, NsupdateTTL:300, NsupdateCmd:"/usr/bin/nsupdate", NsupdateServer:"localhost"}
-var g_clients = make(map[string]*Client)
+var gConfig = Config{Port:3200, NsupdateTTL:300, NsupdateCmd:"/usr/bin/nsupdate", NsupdateServer:"localhost"}
+var gClients = make(map[string]*Client)
 
 func readConfig(filename string) bool {
         data, err := ioutil.ReadFile(filename)
@@ -51,7 +53,7 @@ func readConfig(filename string) bool {
                 return false
         }
 
-        err = json.Unmarshal(data, &g_config)
+        err = json.Unmarshal(data, &gConfig)
         if err != nil {
                 fmt.Printf("Syntax error in config file %s: %v\n", filename, err)
                 return false
@@ -61,12 +63,12 @@ func readConfig(filename string) bool {
 }
 
 func initClients() {
-	for _, c := range g_config.Clients {
+	for _, c := range gConfig.Clients {
 		log.Info(1, "Client: %s", c.Fqdn)
 		client := new(Client)
 		client.fqdn = c.Fqdn
 		client.key = c.Key
-		g_clients[c.Fqdn] = client
+		gClients[c.Fqdn] = client
 	}
 }
 
@@ -75,7 +77,7 @@ func createChallenge() string {
 
 	n, err := rand.Read(buf)
 
-	if (err != nil) {
+	if err != nil {
 		log.Error("Failed to create random challenge: %s", err.Error())
 		return ""
 	}
@@ -110,9 +112,9 @@ func createNsupdateScriptIpv4(fqdn, ipv4 string) string {
 		return ""
 	}
 
-	script := fmt.Sprintf("server %s\n", g_config.NsupdateServer)
+	script := fmt.Sprintf("server %s\n", gConfig.NsupdateServer)
 	script += fmt.Sprintf("del %s in a\n", fqdn)
-	script += fmt.Sprintf("add %s %d in a %s\n", fqdn, g_config.NsupdateTTL, ipv4)
+	script += fmt.Sprintf("add %s %d in a %s\n", fqdn, gConfig.NsupdateTTL, ipv4)
 	script += "send\n"
 
 	_, err = fp.WriteString(script)
@@ -136,7 +138,7 @@ func createNsupdateScriptIpv4(fqdn, ipv4 string) string {
 }
 
 func runNsupdate(script string) bool {
-	cmd := exec.Command(g_config.NsupdateCmd, "-k", g_config.NsupdateKey, script)
+	cmd := exec.Command(gConfig.NsupdateCmd, "-k", gConfig.NsupdateKey, script)
 	out, err := cmd.CombinedOutput()
 
 	if err != nil {
@@ -150,7 +152,7 @@ func runNsupdate(script string) bool {
 }
 
 func server() {
-	adr := fmt.Sprintf("%s:%d", g_config.Host, g_config.Port)
+	adr := fmt.Sprintf("%s:%d", gConfig.Host, gConfig.Port)
 
 	l, err := net.Listen("tcp", adr)
 
@@ -196,7 +198,7 @@ func handleConnection(conn net.Conn) {
 
 	log.Info(1,"server: got fqdn: '%s'", fqdn)
 
-	client := g_clients[fqdn]
+	client := gClients[fqdn]
 
 	if client == nil {
 		log.Info(1,"server: client not found")
@@ -205,6 +207,10 @@ func handleConnection(conn net.Conn) {
 
 	challenge := createChallenge()
 
+	if challenge == "" {
+		return
+	}
+
 	_, err = w.WriteString(challenge + "\n")
 	if ioerror(err) {
 		return
@@ -212,6 +218,10 @@ func handleConnection(conn net.Conn) {
 	w.Flush()
 
 	expectedResponse := createResponse(challenge, client.key)
+
+	if expectedResponse == "" {
+		return
+	}
 
 	response, err := r.ReadString('\n')
 
@@ -251,7 +261,7 @@ func handleConnection(conn net.Conn) {
 }
 
 func client() bool {
-	adr := fmt.Sprintf("%s:%d", g_config.Host, g_config.Port)
+	adr := fmt.Sprintf("%s:%d", gConfig.Host, gConfig.Port)
 
 	conn, err := net.Dial("tcp", adr)
 
@@ -267,7 +277,7 @@ func client() bool {
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
 
-	_, err = w.WriteString(g_config.Fqdn + "\n")
+	_, err = w.WriteString(gConfig.Fqdn + "\n")
 
 	if ioerror(err) {
 		return false
@@ -284,7 +294,7 @@ func client() bool {
 	challenge = strings.Trim(challenge, "\r\n")
 	log.Info(1, "client: challenge: '%s'", challenge)
 
-	response := createResponse(challenge, g_config.Key)
+	response := createResponse(challenge, gConfig.Key)
 	log.Info(1, "client: response: '%s'", response)
 	_, err = w.WriteString(response + "\n")
 
@@ -296,6 +306,111 @@ func client() bool {
 
 
 	return true
+}
+
+func serverUrl() {
+	httpServer := &http.Server{
+		Addr:           fmt.Sprintf("%s:%d", gConfig.Host, gConfig.Port),
+		Handler:        nil,
+		ReadTimeout:    20 * time.Second,
+		WriteTimeout:   20 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+
+	http.HandleFunc("/update", handleUrl)
+
+	log.Info(0,"http server exited: %s", httpServer.ListenAndServe())
+}
+
+func handleUrl(resp http.ResponseWriter, req *http.Request) {
+	log.Info(0, "Request: %s", req.RequestURI)
+
+	ip := retrieveRemoteIp(req)
+
+	if ip == "" {
+		log.Error("Cannot determine remote IP.")
+		io.WriteString(resp, "no IP\n")
+		return
+	}
+
+	q := req.URL.Query()
+
+	v := q["fqdn"]
+
+	if len(v) == 0 || v[0] == "" {
+		log.Error("No FQDN specified.")
+		io.WriteString(resp, "no FQDN - use ?fqdn=<fqdn>\n")
+		return
+	}
+
+	fqdn := v[0]
+
+	v = q["pass"]
+
+	if len(v) == 0 || v[0] == "" {
+		log.Error("No passphrase specified.")
+		io.WriteString(resp, "no passphrase - use ?pass=<pass>\n")
+		return
+	}
+
+	pass := v[0]
+
+	client := gClients[fqdn]
+
+	if client == nil || client.key != pass {
+		log.Error("Invalid FQDN or passphrase")
+		io.WriteString(resp, "invalid FQDN or passphrase\n")
+		return
+	}
+
+	res := true
+
+	log.Info(0, "Validated DNS update request: %s --> %s", fqdn, ip)
+
+	if ip != client.ipv4 {
+		log.Info(1, "Updating DNS entry: %s --> %s", fqdn, ip)
+		script := createNsupdateScriptIpv4(fqdn, ip)
+
+		if script != "" {
+			if runNsupdate(script) {
+				log.Info(0, "Updated DNS entry: %s --> %s", fqdn, ip)
+				client.ipv4 = ip
+			} else {
+				res = false
+			}
+		} else {
+			res = false
+		}
+
+		os.Remove(script)
+	}
+
+	if res {
+		io.WriteString(resp, "ok\n")
+	} else {
+		io.WriteString(resp, "fail\n")
+	}
+}
+
+func retrieveRemoteIp(req *http.Request) string {
+	q := req.URL.Query()
+
+	v := q["ipv4"]
+
+	if len(v) > 0 {
+		ip := v[0]
+		if ip != "" {
+			return ip
+		}
+	}
+
+	v = req.Header["X-Real-Ip"]
+
+	if len(v) > 0 {
+		return v[0]
+	}
+
+	return ""
 }
 
 func main() {
@@ -314,8 +429,8 @@ func main() {
 
 	initClients()
 
-	if len(g_clients) > 0 {
-		server()
+	if len(gClients) > 0 {
+		serverUrl()
 	}
 
 	if !client() {
