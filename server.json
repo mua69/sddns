@@ -1,0 +1,7 @@
+{
+  "Host": "0.0.0.0",
+  "Clients": [ {
+    "Fqdn": "d1.daneb.earth",
+    "Key": "abcdefg" }
+  ]
+}
