@@ -144,7 +144,7 @@ func runNsupdate(script string) bool {
 		return false
 	}
 
-	log.Info(0, "nsupdate output: %s", string(out))
+	log.Info(1, "nsupdate output: %s", string(out))
 
 	return true
 }
@@ -182,7 +182,7 @@ func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	log.Info(0,"server: connection from: %s", conn.RemoteAddr().String())
-	
+
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
 
@@ -233,18 +233,21 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
-	log.Info(1, "Updating DNS entry: %s --> %s", fqdn, ipv4)
-	script := createNsupdateScriptIpv4(fqdn, ipv4)
+	if ipv4 != client.ipv4 {
+		log.Info(1, "Updating DNS entry: %s --> %s", fqdn, ipv4)
+		script := createNsupdateScriptIpv4(fqdn, ipv4)
 
-	if script == "" {
-		return
+		if script == "" {
+			return
+		}
+
+		if runNsupdate(script) {
+			log.Info(0, "Updated DNS entry: %s --> %s", fqdn, ipv4)
+			client.ipv4 = ipv4
+		}
+
+		os.Remove(script)
 	}
-
-	if runNsupdate(script) {
-		log.Info(0, "Updated DNS entry: %s --> %s", fqdn, ipv4)
-	}
-
-	os.Remove(script)
 }
 
 func client() bool {
