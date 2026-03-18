@@ -20,15 +20,17 @@ import (
 )
 
 type ClientConfig struct {
-	Fqdn string
-	Key  string
+	Fqdn          string
+	Ipv6Interface string
+	Key           string
 }
 
 type Client struct {
-	fqdn string
-	key  string
-	ipv4 string
-	ipv6 string
+	fqdn          string
+	ipv6Interface []string
+	key           string
+	ipv4          string
+	ipv6          string
 }
 
 type Config struct {
@@ -68,6 +70,7 @@ func initClients() {
 		log.Info(1, "Client: %s", c.Fqdn)
 		client := new(Client)
 		client.fqdn = c.Fqdn
+		client.ipv6Interface = strings.Split(c.Ipv6Interface, ":")
 		client.key = c.Key
 		gClients[c.Fqdn] = client
 	}
@@ -400,7 +403,7 @@ func handleUrl(resp http.ResponseWriter, req *http.Request) {
 
 	res := true
 
-	log.Info(0, "Validated DNS update request: %s --> %s", fqdn)
+	log.Info(0, "Validated DNS update request: %s", fqdn)
 
 	ipv4 := ""
 	v = q["ipv4"]
@@ -433,6 +436,12 @@ func handleUrl(resp http.ResponseWriter, req *http.Request) {
 	}
 
 	if ipv6 != "" && ipv6 != client.ipv6 {
+		ipv6InterfaceLen := len(client.ipv6Interface)
+		if ipv6InterfaceLen > 0 && ipv6InterfaceLen < 8 {
+			tmp := strings.Split(ipv6, ":")
+			ipv6 = strings.Join(append(tmp[0:8-ipv6InterfaceLen], client.ipv6Interface...), ":")
+
+		}
 		log.Info(1, "Updating DNS AAAA entry: %s --> %s", fqdn, ipv6)
 		script := createNsupdateScriptIpv6(fqdn, ipv6)
 
