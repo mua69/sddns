@@ -21,45 +21,46 @@ import (
 
 type ClientConfig struct {
 	Fqdn string
-	Key string
+	Key  string
 }
 
 type Client struct {
 	fqdn string
-	key string
+	key  string
 	ipv4 string
+	ipv6 string
 }
 
-type Config struct{
-	Host string
-	Port int
-	NsupdateTTL int
-	NsupdateCmd string
-	NsupdateKey string
+type Config struct {
+	Host           string
+	Port           int
+	NsupdateTTL    int
+	NsupdateCmd    string
+	NsupdateKey    string
 	NsupdateServer string
-	Fqdn string
-	Key string
-	Clients []ClientConfig
+	Fqdn           string
+	Key            string
+	Clients        []ClientConfig
 }
 
-var gConfig = Config{Port:3200, NsupdateTTL:300, NsupdateCmd:"/usr/bin/nsupdate", NsupdateServer:"localhost"}
+var gConfig = Config{Port: 3200, NsupdateTTL: 300, NsupdateCmd: "/usr/bin/nsupdate", NsupdateServer: "localhost"}
 var gClients = make(map[string]*Client)
 
 func readConfig(filename string) bool {
-        data, err := ioutil.ReadFile(filename)
+	data, err := ioutil.ReadFile(filename)
 
-        if err != nil {
-                fmt.Printf("Failed to open config file \"%s\": %s\n", filename, err.Error())
-                return false
-        }
+	if err != nil {
+		fmt.Printf("Failed to open config file \"%s\": %s\n", filename, err.Error())
+		return false
+	}
 
-        err = json.Unmarshal(data, &gConfig)
-        if err != nil {
-                fmt.Printf("Syntax error in config file %s: %v\n", filename, err)
-                return false
-        }
+	err = json.Unmarshal(data, &gConfig)
+	if err != nil {
+		fmt.Printf("Syntax error in config file %s: %v\n", filename, err)
+		return false
+	}
 
-        return true
+	return true
 }
 
 func initClients() {
@@ -137,6 +138,39 @@ func createNsupdateScriptIpv4(fqdn, ipv4 string) string {
 	return fp.Name()
 }
 
+func createNsupdateScriptIpv6(fqdn, ipv6 string) string {
+	fp, err := ioutil.TempFile("", "nsupdate")
+
+	if err != nil {
+		log.Error("Cannot create nsupdate script file: %s", err.Error())
+		return ""
+	}
+
+	script := fmt.Sprintf("server %s\n", gConfig.NsupdateServer)
+	script += fmt.Sprintf("del %s in aaaa\n", fqdn)
+	script += fmt.Sprintf("add %s %d in aaaa %s\n", fqdn, gConfig.NsupdateTTL, ipv6)
+	script += "send\n"
+
+	_, err = fp.WriteString(script)
+	if err != nil {
+		log.Error("Failed writing to nsupdate script file: %s", err.Error())
+		fp.Close()
+		os.Remove(fp.Name())
+		return ""
+	}
+
+	err = fp.Close()
+
+	if err != nil {
+		log.Error("Failed writing to nsupdate script file: %s", err.Error())
+		fp.Close()
+		os.Remove(fp.Name())
+		return ""
+	}
+
+	return fp.Name()
+}
+
 func runNsupdate(script string) bool {
 	cmd := exec.Command(gConfig.NsupdateCmd, "-k", gConfig.NsupdateKey, script)
 	out, err := cmd.CombinedOutput()
@@ -179,11 +213,11 @@ func ioerror(err error) bool {
 }
 
 func handleConnection(conn net.Conn) {
-	conn.SetDeadline(time.Now().Add(20*time.Second))
+	conn.SetDeadline(time.Now().Add(20 * time.Second))
 
 	defer conn.Close()
 
-	log.Info(0,"server: connection from: %s", conn.RemoteAddr().String())
+	log.Info(0, "server: connection from: %s", conn.RemoteAddr().String())
 
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
@@ -196,12 +230,12 @@ func handleConnection(conn net.Conn) {
 
 	fqdn = strings.Trim(fqdn, "\r\n")
 
-	log.Info(1,"server: got fqdn: '%s'", fqdn)
+	log.Info(1, "server: got fqdn: '%s'", fqdn)
 
 	client := gClients[fqdn]
 
 	if client == nil {
-		log.Info(1,"server: client not found")
+		log.Info(1, "server: client not found")
 		return
 	}
 
@@ -272,7 +306,7 @@ func client() bool {
 
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(20*time.Second))
+	conn.SetDeadline(time.Now().Add(20 * time.Second))
 
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
@@ -304,7 +338,6 @@ func client() bool {
 
 	w.Flush()
 
-
 	return true
 }
 
@@ -319,19 +352,21 @@ func serverUrl() {
 
 	http.HandleFunc("/update", handleUrl)
 
-	log.Info(0,"http server exited: %s", httpServer.ListenAndServe())
+	log.Info(0, "http server exited: %s", httpServer.ListenAndServe())
 }
 
 func handleUrl(resp http.ResponseWriter, req *http.Request) {
 	log.Info(0, "Request: %s", req.RequestURI)
 
-	ip := retrieveRemoteIp(req)
+	/*
+		ip := retrieveRemoteIp(req)
 
-	if ip == "" {
-		log.Error("Cannot determine remote IP.")
-		io.WriteString(resp, "no IP\n")
-		return
-	}
+		if ip == "" {
+			log.Error("Cannot determine remote IP.")
+			io.WriteString(resp, "no IP\n")
+			return
+		}
+	*/
 
 	q := req.URL.Query()
 
@@ -365,16 +400,46 @@ func handleUrl(resp http.ResponseWriter, req *http.Request) {
 
 	res := true
 
-	log.Info(0, "Validated DNS update request: %s --> %s", fqdn, ip)
+	log.Info(0, "Validated DNS update request: %s --> %s", fqdn)
 
-	if ip != client.ipv4 {
-		log.Info(1, "Updating DNS entry: %s --> %s", fqdn, ip)
-		script := createNsupdateScriptIpv4(fqdn, ip)
+	ipv4 := ""
+	v = q["ipv4"]
+	if len(v) > 0 {
+		ipv4 = v[0]
+	}
+
+	if ipv4 != "" && ipv4 != client.ipv4 {
+		log.Info(1, "Updating DNS A entry: %s --> %s", fqdn, ipv4)
+		script := createNsupdateScriptIpv4(fqdn, ipv4)
 
 		if script != "" {
 			if runNsupdate(script) {
-				log.Info(0, "Updated DNS entry: %s --> %s", fqdn, ip)
-				client.ipv4 = ip
+				log.Info(0, "Updated DNS A entry: %s --> %s", fqdn, ipv4)
+				client.ipv4 = ipv4
+			} else {
+				res = false
+			}
+		} else {
+			res = false
+		}
+
+		os.Remove(script)
+	}
+
+	ipv6 := ""
+	v = q["ipv6"]
+	if len(v) > 0 {
+		ipv6 = v[0]
+	}
+
+	if ipv6 != "" && ipv6 != client.ipv6 {
+		log.Info(1, "Updating DNS AAAA entry: %s --> %s", fqdn, ipv6)
+		script := createNsupdateScriptIpv6(fqdn, ipv6)
+
+		if script != "" {
+			if runNsupdate(script) {
+				log.Info(0, "Updated DNS AAAA entry: %s --> %s", fqdn, ipv6)
+				client.ipv6 = ipv6
 			} else {
 				res = false
 			}
@@ -421,10 +486,10 @@ func main() {
 		log.Fatal("Usage: %s <config file>", prgName)
 	}
 
-    cfgFile := os.Args[1]
+	cfgFile := os.Args[1]
 
-    if !readConfig(cfgFile) {
-    	log.Fatal("Failed to read configuratonfile: %s", cfgFile)
+	if !readConfig(cfgFile) {
+		log.Fatal("Failed to read configuratonfile: %s", cfgFile)
 	}
 
 	initClients()
