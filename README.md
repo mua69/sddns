@@ -32,6 +32,7 @@ server using `nsupdate` (RFC 2136 dynamic updates, as supported by BIND and othe
 
 ```sh
 go build -o sddns .
+go test ./...        # run the tests
 ```
 
 ## Usage
