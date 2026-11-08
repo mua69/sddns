@@ -120,6 +120,7 @@ func TestParseIpv6Interface(t *testing.T) {
 
 func TestMergeIpv6(t *testing.T) {
 	iface, _ := parseIpv6Interface("211:32ff:fe12:3456")
+	iface5, _ := parseIpv6Interface("7:211:32ff:fe12:3456")
 
 	cases := []struct {
 		addr  string
@@ -130,6 +131,11 @@ func TestMergeIpv6(t *testing.T) {
 		{"2001:db8:1234:5600::1", iface, "2001:db8:1234:5600:211:32ff:fe12:3456"},
 		{"2001:db8::1", nil, "2001:db8::1"},
 		{"2001:0db8:0000:0000:0000:0000:0000:0001", nil, "2001:db8::1"},
+		// prefixes in CIDR notation
+		{"2001:9e8:8cc2:4900::/64", iface, "2001:9e8:8cc2:4900:211:32ff:fe12:3456"},
+		{"2001:9e8:8cc2:4900:1:2:3:4/64", iface, "2001:9e8:8cc2:4900:211:32ff:fe12:3456"}, // host bits ignored
+		{"2001:9e8:8cc2:4900::/56", iface5, "2001:9e8:8cc2:4907:211:32ff:fe12:3456"},     // interface sets subnet ID
+		{"2001:db8::1/128", nil, "2001:db8::1"},
 	}
 	for _, c := range cases {
 		got, err := mergeIpv6(c.addr, c.iface)
@@ -138,11 +144,34 @@ func TestMergeIpv6(t *testing.T) {
 		}
 	}
 
-	invalid := []string{"", "203.0.113.7", "::ffff:203.0.113.7", "2001:db8::1\nsend", "2001:db8:::1"}
+	invalid := []string{
+		"", "203.0.113.7", "::ffff:203.0.113.7", "2001:db8::1\nsend", "2001:db8:::1",
+		"203.0.113.0/24", "2001:db8::/129", "2001:db8::/", "2001:db8::/64/64", "2001:db8::/x",
+		"2001:db8::/56", // interface (4 groups) does not cover the 72 host bits
+	}
 	for _, in := range invalid {
 		if _, err := mergeIpv6(in, iface); err == nil {
 			t.Errorf("mergeIpv6(%q): want error", in)
 		}
+	}
+
+	// A prefix without Ipv6Interface would give the bare network address.
+	if got, err := mergeIpv6("2001:9e8:8cc2:4900::/64", nil); err == nil {
+		t.Errorf("prefix without interface: got %q, want error", got)
+	}
+}
+
+func TestHandlerIpv6Prefix(t *testing.T) {
+	logs := setup(t)
+	gDryRun = true
+	c := addClient(t, "h.example.org", "secret", "211:32ff:fe12:3456")
+
+	got := request(map[string]string{"fqdn": "h.example.org", "pass": "secret", "ipv6": "2001:9e8:8cc2:4900::/64"})
+	if got != "ok" {
+		t.Fatalf("got %q, want ok\n%s", got, logs)
+	}
+	if c.ipv6 != "2001:9e8:8cc2:4900:211:32ff:fe12:3456" {
+		t.Errorf("cached ipv6 = %q", c.ipv6)
 	}
 }
 

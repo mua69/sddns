@@ -167,6 +167,11 @@ The router sends its own IPv6 address. With `Ipv6Interface` set, sddns keeps
 the prefix from that address and swaps in the configured interface ID. The
 `AAAA` record then points to a particular device in the LAN.
 
+Instead of its own address, the router can send its LAN prefix, for example
+`ipv6=<ip6lanprefix>` on a FRITZ!Box, which arrives as
+`2001:9e8:8cc2:4900::/64`. sddns accepts prefixes in this CIDR notation too;
+see below.
+
 #### IPv6 interface merging in detail
 
 If `Ipv6Interface` has *N* groups, sddns keeps the first `8 - N` groups of the
@@ -179,7 +184,24 @@ result:     2001:db8:1234:5600:211:32ff:fe12:3456
 ```
 
 The reported address can use any valid IPv6 notation, including the compressed
-`::` form. An invalid address is rejected and the response is `fail`. Write
+`::` form. An invalid address is rejected and the response is `fail`.
+
+**Prefixes** (`<address>/<length>`) are merged bit by bit: the first *length*
+bits come from the prefix, all remaining bits from `Ipv6Interface`:
+
+```
+reported:   2001:9e8:8cc2:4900::/64
+interface:                      211:32ff:fe12:3456
+result:     2001:9e8:8cc2:4900:211:32ff:fe12:3456
+```
+
+`Ipv6Interface` must cover every bit after the prefix, so a /64 needs at least
+4 groups and a /56 at least 5. Otherwise the request is rejected (`fail`)
+rather than creating an address with zeros in it. With a shorter prefix, the
+extra interface groups select the subnet: for a /56, the interface
+`7:211:32ff:fe12:3456` turns `2001:9e8:8cc2:4900::/56` into
+`2001:9e8:8cc2:4907:211:32ff:fe12:3456`. Bits inside the prefix are never
+overwritten. Write
 `Ipv6Interface` as 1–7 hex groups without `::`; the server refuses to start if
 it is malformed.
 

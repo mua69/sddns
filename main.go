@@ -281,16 +281,45 @@ func parseIpv6Interface(s string) ([]byte, error) {
 }
 
 // mergeIpv6 parses an IPv6 address in any valid notation (including
-// compressed "::" form) and replaces its trailing bytes with iface.
+// compressed "::" form) or an IPv6 prefix in CIDR notation (e.g.
+// "2001:db8:1:2::/64") and replaces its trailing bytes with iface.
+// For a prefix, the prefix bits are kept and iface fills the remaining bits;
+// iface must cover all of them.
 func mergeIpv6(addr string, iface []byte) (string, error) {
-	ip := net.ParseIP(addr)
-	if ip == nil || ip.To4() != nil {
-		return "", fmt.Errorf("not an IPv6 address")
+	if !strings.Contains(addr, "/") {
+		ip := net.ParseIP(addr)
+		if ip == nil || ip.To4() != nil {
+			return "", fmt.Errorf("not an IPv6 address")
+		}
+
+		merged := make(net.IP, net.IPv6len)
+		copy(merged, ip.To16())
+		copy(merged[net.IPv6len-len(iface):], iface)
+		return merged.String(), nil
 	}
 
+	_, ipnet, err := net.ParseCIDR(addr)
+	if err != nil {
+		return "", fmt.Errorf("not an IPv6 address or prefix")
+	}
+	prefixLen, bits := ipnet.Mask.Size()
+	if bits != 8*net.IPv6len || ipnet.IP.To4() != nil {
+		return "", fmt.Errorf("not an IPv6 prefix")
+	}
+
+	if hostBits := bits - prefixLen; 8*len(iface) < hostBits {
+		return "", fmt.Errorf("prefix /%d requires an Ipv6Interface of at least %d groups", prefixLen, (hostBits+15)/16)
+	}
+
+	// Align iface to the end of the address, then take the prefix bits from
+	// the network address and all other bits from iface.
+	full := make([]byte, net.IPv6len)
+	copy(full[net.IPv6len-len(iface):], iface)
+
 	merged := make(net.IP, net.IPv6len)
-	copy(merged, ip.To16())
-	copy(merged[net.IPv6len-len(iface):], iface)
+	for i := range merged {
+		merged[i] = ipnet.IP[i]&ipnet.Mask[i] | full[i]&^ipnet.Mask[i]
+	}
 
 	return merged.String(), nil
 }
