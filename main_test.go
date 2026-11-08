@@ -134,7 +134,7 @@ func TestMergeIpv6(t *testing.T) {
 		// prefixes in CIDR notation
 		{"2001:9e8:8cc2:4900::/64", iface, "2001:9e8:8cc2:4900:211:32ff:fe12:3456"},
 		{"2001:9e8:8cc2:4900:1:2:3:4/64", iface, "2001:9e8:8cc2:4900:211:32ff:fe12:3456"}, // host bits ignored
-		{"2001:9e8:8cc2:4900::/56", iface5, "2001:9e8:8cc2:4907:211:32ff:fe12:3456"},     // interface sets subnet ID
+		{"2001:9e8:8cc2:4900::/56", iface5, "2001:9e8:8cc2:4907:211:32ff:fe12:3456"},      // interface sets subnet ID
 		{"2001:db8::1/128", nil, "2001:db8::1"},
 	}
 	for _, c := range cases {
