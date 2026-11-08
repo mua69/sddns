@@ -1,0 +1,57 @@
+# systemd unit for sddns.
+#
+# Install:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin sddns
+#   install -m 0755 sddns /usr/local/bin/sddns
+#   install -d -m 0750 -g sddns /etc/sddns
+#   install -m 0640 -g sddns server.json /etc/sddns/server.json
+#   sddns -genpass home.example.org /etc/sddns/server.json
+#   cp sddns.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now sddns
+#
+# sddns must be able to read the TSIG key file (NsupdateKey). If it belongs to
+# the bind group, keep SupplementaryGroups=bind below; otherwise adjust it.
+#
+# Logs go to the journal (journalctl -u sddns), where the fail2ban jail in
+# contrib/fail2ban reads them.
+
+[Unit]
+Description=sddns dynamic DNS update server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sddns /etc/sddns/server.json
+Restart=on-failure
+RestartSec=5s
+
+User=sddns
+Group=sddns
+SupplementaryGroups=bind
+
+# Sandboxing: sddns only needs to read its config and the TSIG key, listen on
+# 127.0.0.1, write temporary nsupdate scripts and run nsupdate.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+UMask=0077
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

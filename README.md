@@ -183,31 +183,86 @@ The reported address can use any valid IPv6 notation, including the compressed
 `Ipv6Interface` as 1–7 hex groups without `::`; the server refuses to start if
 it is malformed.
 
+## Running as a service
+
+A systemd unit is in [contrib/systemd/sddns.service](contrib/systemd/sddns.service).
+It runs sddns as an unprivileged `sddns` user with systemd sandboxing, reads
+`/etc/sddns/server.json` and logs to the journal (`journalctl -u sddns`). The
+install steps are in the comments at the top of the file.
+
+The unit adds the `bind` group so sddns can read the TSIG key file; change
+`SupplementaryGroups` if your key file belongs to a different group. After
+`-genpass`, run `systemctl restart sddns` to load the new password.
+
 ## Reverse proxy
 
 sddns speaks plain HTTP on `127.0.0.1` only. A reverse proxy on the same host
-terminates TLS and forwards `/update`. Example for nginx:
+terminates TLS and forwards `/update`. A complete nginx config with rate
+limiting is in [contrib/nginx/sddns.conf](contrib/nginx/sddns.conf). The
+essential part:
 
 ```nginx
-server {
-    listen 443 ssl;
-    server_name ddns.example.org;
-    # ssl_certificate / ssl_certificate_key ...
-
-    access_log off;  # the query string contains the password
-
-    location = /update {
-        proxy_pass http://127.0.0.1:3200;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
+location = /update {
+    limit_req zone=sddns burst=5 nodelay;
+    proxy_pass http://127.0.0.1:3200;
+    proxy_set_header X-Real-IP $remote_addr;
 }
 ```
 
 sddns logs the real client IP from `X-Real-IP` (`TrustProxy`, on by default).
 The proxy must always set this header itself (as above), overwriting any value
 the client sent; otherwise a client could put any IP into the logs. If the
-header is missing, the connection address (`127.0.0.1`) is logged. Also turn off the proxy's access log for this location, or
-strip the query string from it: otherwise the proxy writes passwords to disk.
+header is missing, the connection address (`127.0.0.1`) is logged.
+
+Turn off the proxy's access log for this location (`access_log off;`), or strip
+the query string from it: otherwise the proxy writes passwords to disk.
+
+### Rate limiting
+
+The nginx example limits each client IP to 6 requests per minute, with a burst
+of 5. Requests over the limit are rejected with `429 Too Many Requests` before
+they reach sddns. A router sends updates only when its address changes, so
+this is generous. The limit mainly caps CPU load (each password check costs
+about 14 ms) and log noise; guessing a generated password is hopeless anyway.
+
+`limit_req_zone` must be in nginx's `http` context. Files in
+`/etc/nginx/conf.d/` are included there, so the contrib file can be copied
+there as is. To check it:
+
+```sh
+sudo nginx -t && sudo systemctl reload nginx
+for i in $(seq 10); do
+  curl -s -o /dev/null -w "%{http_code}\n" "https://ddns.example.org/update?fqdn=x&pass=y"
+done   # the first requests pass, the rest return 429
+```
+
+If another proxy or CDN sits in front of nginx, configure `set_real_ip_from`
+and `real_ip_header` first, so the limit and `X-Real-IP` use the real client
+address.
+
+### fail2ban
+
+fail2ban adds a second layer: it bans IPs that keep failing to log in. A filter
+and a jail for the sddns log format are in
+[contrib/fail2ban/](contrib/fail2ban/):
+
+```sh
+sudo cp contrib/fail2ban/filter.d/sddns.conf /etc/fail2ban/filter.d/
+sudo cp contrib/fail2ban/jail.d/sddns.conf   /etc/fail2ban/jail.d/
+sudo fail2ban-regex systemd-journal[journalflags=1] /etc/fail2ban/filter.d/sddns.conf
+sudo systemctl reload fail2ban
+sudo fail2ban-client status sddns
+```
+
+- The filter matches wrong passwords, unknown host names and requests with
+  missing parameters. It reads the IP from the trailing `client=` field, so a
+  crafted host name can't get a different address banned.
+- The jail bans an IP for 1 hour after 5 failures within 10 minutes, on the
+  HTTP and HTTPS ports where nginx accepts requests.
+- It assumes sddns runs as the systemd unit `sddns.service` and logs to the
+  journal. For a log file, replace `backend`/`journalmatch` with `logpath`.
+- `TrustProxy` must stay on, otherwise every failure is logged as
+  `client=127.0.0.1` and fail2ban would ban localhost.
 
 ## Logging
 
@@ -221,7 +276,7 @@ time=2026-11-08T18:30:02.532+01:00 level=ERROR msg="invalid fqdn or passphrase" 
 
 Values with special characters are quoted and escaped, so a client can't fake
 extra log lines. Failed logins always log `client=<ip>`, which makes them easy
-to match in fail2ban.
+to match in fail2ban (see [fail2ban](#fail2ban)).
 
 ## Security notes
 
